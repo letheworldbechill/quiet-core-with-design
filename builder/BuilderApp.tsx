@@ -1,4 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
+import JSZip from "jszip";
+import { saveAs } from "file-saver";
 import {
   validateSiteContent,
   renderSiteContent,
@@ -10,11 +12,15 @@ import {
   type ContentState,
   type Locale,
 } from "../core";
-import { generateCSS } from "../design-system";
+import { generateCSS, renderPageLayout, type PageLayout } from "../design-system";
+import { useValidation, useImages, type UploadedImage } from "./hooks";
+import { SectionEditor, ImageUploader, ValidationDisplay } from "./components";
 
 type Screen = "content" | "design" | "publish";
 
 const STORAGE_KEY = "quiet-builder-site";
+const IMAGES_KEY = "quiet-builder-images";
+const LAYOUT_KEY = "quiet-builder-layout";
 
 function generateId(): string {
   return crypto.randomUUID();
@@ -24,11 +30,11 @@ function now(): string {
   return new Date().toISOString();
 }
 
-function loadFromStorage(): SiteContent | null {
+function loadFromStorage<T>(key: string): T | null {
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
+    const stored = localStorage.getItem(key);
     if (stored) {
-      return JSON.parse(stored) as SiteContent;
+      return JSON.parse(stored) as T;
     }
   } catch {
     // Ignore parse errors
@@ -36,28 +42,55 @@ function loadFromStorage(): SiteContent | null {
   return null;
 }
 
-function saveToStorage(site: SiteContent): void {
+function saveToStorage<T>(key: string, data: T): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(site));
+    localStorage.setItem(key, JSON.stringify(data));
   } catch {
     // Ignore storage errors
   }
 }
 
+const defaultLayout: PageLayout = {
+  sections: [
+    {
+      decl: "a",
+      grid: "a",
+      slots: [
+        { type: "primary", content: "Willkommen" },
+        { type: "secondary", content: "Deine Seite beginnt hier." },
+      ],
+    },
+  ],
+};
+
 export function BuilderApp() {
   const [screen, setScreen] = useState<Screen>("content");
   const [site, setSite] = useState<SiteContent>(() => {
-    const stored = loadFromStorage();
+    const stored = loadFromStorage<SiteContent>(STORAGE_KEY);
     return stored || createEmptySiteContent(generateId(), "en", now());
   });
   const [currentPageIndex, setCurrentPageIndex] = useState(0);
   const [status, setStatus] = useState<{ type: "success" | "error" | "info"; message: string } | null>(null);
   const [previewHtml, setPreviewHtml] = useState<string | null>(null);
+  const [pageLayout, setPageLayout] = useState<PageLayout>(() => {
+    return loadFromStorage<PageLayout>(LAYOUT_KEY) || defaultLayout;
+  });
+
+  const validation = useValidation(site);
+  const imageStore = useImages(loadFromStorage<UploadedImage[]>(IMAGES_KEY) || []);
 
   // Auto-save to localStorage
   useEffect(() => {
-    saveToStorage(site);
+    saveToStorage(STORAGE_KEY, site);
   }, [site]);
+
+  useEffect(() => {
+    saveToStorage(IMAGES_KEY, imageStore.images);
+  }, [imageStore.images]);
+
+  useEffect(() => {
+    saveToStorage(LAYOUT_KEY, pageLayout);
+  }, [pageLayout]);
 
   const currentPage = site.pages[currentPageIndex];
 
@@ -143,7 +176,6 @@ export function BuilderApp() {
     const artifacts = validateAndBuild();
     if (!artifacts || artifacts.length === 0) return;
 
-    // Inject CSS into the first page for preview
     const css = generateCSS();
     const firstPage = artifacts[0].content;
     const withCss = firstPage.replace(
@@ -153,61 +185,43 @@ export function BuilderApp() {
     setPreviewHtml(withCss);
   }, [validateAndBuild]);
 
-  const downloadSite = useCallback(() => {
+  const downloadAsZip = useCallback(async () => {
     const artifacts = validateAndBuild();
     if (!artifacts) return;
 
     const css = generateCSS();
+    const zip = new JSZip();
 
-    // Create a complete HTML file with all pages and CSS
-    const fullHtml = artifacts.map((a) => {
-      // Inject CSS into each page
-      return a.content.replace(
+    // Add CSS file
+    zip.file("styles.css", css);
+
+    // Add HTML files with CSS link
+    artifacts.forEach((artifact) => {
+      const htmlWithCssLink = artifact.content.replace(
         "</head>",
-        `<style>\n${css}\n</style>\n</head>`
+        `  <link rel="stylesheet" href="styles.css">\n</head>`
       );
-    }).join("\n\n<!-- ========== NEXT PAGE ========== -->\n\n");
+      zip.file(artifact.path, htmlWithCssLink);
+    });
 
-    const blob = new Blob([fullHtml], { type: "text/html" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${site.seo.title || "website"}.html`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    // Add images folder
+    if (imageStore.images.length > 0) {
+      const imagesFolder = zip.folder("images");
+      if (imagesFolder) {
+        for (const image of imageStore.images) {
+          // Convert data URL to blob
+          const base64Data = image.dataUrl.split(",")[1];
+          imagesFolder.file(image.name, base64Data, { base64: true });
+        }
+      }
+    }
 
-    setStatus({ type: "success", message: "Download gestartet!" });
-  }, [site, validateAndBuild]);
+    // Generate ZIP and download
+    const content = await zip.generateAsync({ type: "blob" });
+    saveAs(content, `${site.seo.title || "website"}.zip`);
 
-  const downloadAsZipSimulated = useCallback(() => {
-    const artifacts = validateAndBuild();
-    if (!artifacts) return;
-
-    const css = generateCSS();
-
-    // Create a single file with all pages separated by comments
-    const combined = [
-      `/* ========== styles.css ========== */\n${css}`,
-      ...artifacts.map((a) => `\n\n/* ========== ${a.path} ========== */\n${a.content.replace(
-        "</head>",
-        `<link rel="stylesheet" href="styles.css">\n</head>`
-      )}`)
-    ].join("\n");
-
-    const blob = new Blob([combined], { type: "text/plain" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${site.seo.title || "website"}-bundle.txt`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-
-    setStatus({ type: "success", message: `Bundle mit ${artifacts.length} Seite(n) + CSS heruntergeladen!` });
-  }, [site, validateAndBuild]);
+    setStatus({ type: "success", message: `ZIP mit ${artifacts.length} Seite(n), CSS und ${imageStore.images.length} Bild(ern) heruntergeladen!` });
+  }, [site, validateAndBuild, imageStore.images]);
 
   const resetSite = useCallback(() => {
     if (confirm("Alle Daten löschen und neu beginnen?")) {
@@ -215,13 +229,25 @@ export function BuilderApp() {
       setSite(newSite);
       setCurrentPageIndex(0);
       setPreviewHtml(null);
+      setPageLayout(defaultLayout);
+      imageStore.clearAll();
       setStatus({ type: "info", message: "Projekt zurückgesetzt" });
     }
-  }, [site.locale]);
+  }, [site.locale, imageStore]);
 
   const changeLocale = useCallback((locale: Locale) => {
     updateSite({ locale });
   }, [updateSite]);
+
+  const applyLayoutToPage = useCallback(() => {
+    try {
+      const rendered = renderPageLayout(pageLayout);
+      updatePage({ body: rendered.html });
+      setStatus({ type: "success", message: "Layout auf aktuelle Seite angewendet!" });
+    } catch (e) {
+      setStatus({ type: "error", message: (e as Error).message });
+    }
+  }, [pageLayout, updatePage]);
 
   return (
     <div className="builder">
@@ -248,6 +274,8 @@ export function BuilderApp() {
           </button>
         </nav>
       </header>
+
+      <ValidationDisplay validation={validation} showWarnings={screen === "content"} />
 
       {screen === "content" && (
         <div className="screen">
@@ -286,13 +314,19 @@ export function BuilderApp() {
           {currentPage && (
             <>
               <div className="form-group">
-                <label>Slug</label>
+                <label>
+                  Slug
+                  {currentPage.slug && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(currentPage.slug) && (
+                    <span className="field-error"> ⚠️ Ungültiges Format</span>
+                  )}
+                </label>
                 <input
                   type="text"
                   value={currentPage.slug}
-                  onChange={(e) => updatePage({ slug: e.target.value })}
+                  onChange={(e) => updatePage({ slug: e.target.value.toLowerCase() })}
                   placeholder="z.B. home, about, contact"
                 />
+                <small>Nur Kleinbuchstaben, Zahlen und Bindestriche</small>
               </div>
 
               <div className="form-group">
@@ -312,27 +346,51 @@ export function BuilderApp() {
                   onChange={(e) => updatePage({ body: e.target.value })}
                   placeholder="<p>Dein Inhalt hier...</p>"
                 />
+                <div className="actions" style={{ marginTop: "0.5rem" }}>
+                  <button className="btn btn-secondary btn-small" onClick={applyLayoutToPage}>
+                    Design-Layout anwenden
+                  </button>
+                </div>
               </div>
             </>
           )}
 
           <div className="form-group">
-            <label>SEO Titel</label>
+            <label>
+              SEO Titel
+              <span className="char-count">{site.seo.title.length}/60</span>
+            </label>
             <input
               type="text"
               value={site.seo.title}
               onChange={(e) => updateSite({ seo: { ...site.seo, title: e.target.value } })}
               placeholder="Website-Titel für Suchmaschinen"
+              className={site.seo.title.length > 60 ? "input-warning" : ""}
             />
           </div>
 
           <div className="form-group">
-            <label>SEO Beschreibung</label>
+            <label>
+              SEO Beschreibung
+              <span className="char-count">{site.seo.description.length}/160</span>
+            </label>
             <textarea
               value={site.seo.description}
               onChange={(e) => updateSite({ seo: { ...site.seo, description: e.target.value } })}
               placeholder="Kurze Beschreibung für Suchmaschinen"
               style={{ minHeight: "80px" }}
+              className={site.seo.description.length > 160 ? "input-warning" : ""}
+            />
+          </div>
+
+          <div className="form-group">
+            <label>Bilder</label>
+            <ImageUploader
+              images={imageStore.images}
+              onAdd={imageStore.addImage}
+              onRemove={imageStore.removeImage}
+              error={imageStore.error}
+              onClearError={imageStore.clearError}
             />
           </div>
 
@@ -344,56 +402,41 @@ export function BuilderApp() {
         <div className="screen">
           <h2>Design System</h2>
           <p className="info-text">
-            Das Design System ist eingefroren (🧊) und verwendet vordefinierte Tokens.
+            Erstelle Sections mit dem eingefrorenen Design System.
+            Klicke "Layout anwenden" auf der Inhalt-Seite.
           </p>
 
-          <div className="form-group">
-            <label>Farbpalette</label>
+          <SectionEditor layout={pageLayout} onChange={setPageLayout} />
+
+          <div className="download-section" style={{ marginTop: "1.5rem" }}>
+            <h3>Farbpalette (🧊 eingefroren)</h3>
             <div className="preview-box">
               <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
                 {[
-                  { name: "base", label: "Basis" },
-                  { name: "structure", label: "Struktur" },
-                  { name: "context", label: "Kontext" },
-                  { name: "intent", label: "Absicht" },
-                  { name: "action", label: "Aktion" },
-                  { name: "final", label: "Final" },
-                ].map(({ name, label }) => (
+                  { name: "base", hex: "#0B2839" },
+                  { name: "structure", hex: "#10475E" },
+                  { name: "context", hex: "#3D717E" },
+                  { name: "intent", hex: "#D68631" },
+                  { name: "action", hex: "#964405" },
+                  { name: "final", hex: "#5A3211" },
+                ].map(({ name, hex }) => (
                   <div
                     key={name}
                     style={{
                       width: "80px",
                       height: "50px",
-                      background: `var(--${name})`,
+                      background: hex,
                       borderRadius: "4px",
                       display: "flex",
                       alignItems: "flex-end",
                       padding: "0.25rem",
-                      fontSize: "0.65rem",
+                      fontSize: "0.6rem",
                     }}
                   >
-                    {label}
+                    {name}
                   </div>
                 ))}
               </div>
-            </div>
-          </div>
-
-          <div className="form-group">
-            <label>Textfarben</label>
-            <div className="preview-box">
-              <p style={{ color: "var(--text-main)", marginBottom: "0.5rem" }}>Text Main - Haupttext</p>
-              <p style={{ color: "var(--text-soft)", marginBottom: "0.5rem" }}>Text Soft - Sekundärtext</p>
-              <p style={{ color: "var(--text-muted)" }}>Text Muted - Gedämpfter Text</p>
-            </div>
-          </div>
-
-          <div className="form-group">
-            <label>Typografie</label>
-            <div className="preview-box">
-              <p><strong>Maximale Zeilenlänge:</strong> 75ch</p>
-              <p><strong>Section Padding:</strong> 4rem × 3rem</p>
-              <p><strong>Gap:</strong> 2rem (Section) / 1.5rem (Slot)</p>
             </div>
           </div>
 
@@ -409,6 +452,9 @@ export function BuilderApp() {
             <label>Aktueller Status</label>
             <div>
               <span className={`state-badge ${site.state}`}>{site.state}</span>
+              {!validation.isValid && (
+                <span className="state-warning"> ⚠️ Validierungsfehler vorhanden</span>
+              )}
             </div>
           </div>
 
@@ -416,7 +462,11 @@ export function BuilderApp() {
             <label>Status ändern</label>
             <div className="actions">
               {site.state === "draft" && (
-                <button className="btn" onClick={() => handleTransition("review")}>
+                <button
+                  className="btn"
+                  onClick={() => handleTransition("review")}
+                  disabled={!validation.isValid}
+                >
                   Zur Prüfung
                 </button>
               )}
@@ -425,7 +475,11 @@ export function BuilderApp() {
                   <button className="btn btn-secondary" onClick={() => handleTransition("draft")}>
                     Zurück zu Entwurf
                   </button>
-                  <button className="btn" onClick={() => handleTransition("published")}>
+                  <button
+                    className="btn"
+                    onClick={() => handleTransition("published")}
+                    disabled={!validation.isValid}
+                  >
                     Veröffentlichen
                   </button>
                 </>
@@ -447,11 +501,8 @@ export function BuilderApp() {
               <button className="btn btn-secondary" onClick={generatePreview}>
                 Vorschau generieren
               </button>
-              <button className="btn" onClick={downloadSite}>
-                HTML herunterladen
-              </button>
-              <button className="btn btn-secondary" onClick={downloadAsZipSimulated}>
-                Bundle herunterladen
+              <button className="btn" onClick={downloadAsZip} disabled={!validation.isValid}>
+                📦 Als ZIP herunterladen
               </button>
             </div>
 
@@ -482,12 +533,8 @@ export function BuilderApp() {
             </div>
             <p className="info-text" style={{ marginTop: "0.5rem" }}>
               Daten werden automatisch im Browser gespeichert.
+              {imageStore.images.length > 0 && ` (${imageStore.images.length} Bilder)`}
             </p>
-          </div>
-
-          <div className="preview-box" style={{ marginTop: "1.5rem" }}>
-            <p><strong>Rohdaten (JSON):</strong></p>
-            <pre style={{ fontSize: "0.75rem" }}>{JSON.stringify(site, null, 2)}</pre>
           </div>
 
           {status && <div className={`status ${status.type}`}>{status.message}</div>}

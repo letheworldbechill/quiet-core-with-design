@@ -9,12 +9,15 @@
     "test": "tsx tests/run.ts && tsx design-system/tests.ts"
   },
   "dependencies": {
+    "file-saver": "^2.0.5",
+    "jszip": "^3.10.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "zod": "^3.23.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260131.0",
+    "@types/file-saver": "^2.0.7",
     "@types/node": "^25.2.0",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
