@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Quiet Core Builder - Content Management mit Frozen Core Architektur" />
+    <title>Quiet Core Builder</title>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: #0B2839;
+        color: #F3F6F8;
+        min-height: 100vh;
+      }
+      #root {
+        min-height: 100vh;
+      }
+      .loading {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        font-size: 1.2rem;
+        color: #C7D3DB;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <div class="loading">Laden...</div>
+    </div>
+    <script type="module" src="/builder/main.tsx"></script>
+  </body>
+</html>
