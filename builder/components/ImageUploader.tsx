@@ -1,5 +1,6 @@
 import { useRef, type DragEvent, useState } from "react";
 import type { UploadedImage } from "../hooks";
+import type { Translations } from "../i18n";
 
 type ImageUploaderProps = {
   images: UploadedImage[];
@@ -7,9 +8,10 @@ type ImageUploaderProps = {
   onRemove: (id: string) => void;
   error: string | null;
   onClearError: () => void;
+  t: Translations;
 };
 
-export function ImageUploader({ images, onAdd, onRemove, error, onClearError }: ImageUploaderProps) {
+export function ImageUploader({ images, onAdd, onRemove, error, onClearError, t }: ImageUploaderProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
 
@@ -65,14 +67,14 @@ export function ImageUploader({ images, onAdd, onRemove, error, onClearError }: 
         />
         <div className="drop-zone-content">
           <span className="drop-icon">📷</span>
-          <p>Bilder hier ablegen oder klicken</p>
-          <small>JPEG, PNG, GIF, WebP • Max 5MB</small>
+          <p>{t.images.dropzone}</p>
+          <small>{t.images.dropzoneHint}</small>
         </div>
       </div>
 
       {error && (
         <div className="status error" onClick={onClearError}>
-          {error} (klicken zum schließen)
+          {error} ({t.common.clickToClose})
         </div>
       )}
 
@@ -112,7 +114,7 @@ export function ImageUploader({ images, onAdd, onRemove, error, onClearError }: 
 
       {images.length > 0 && (
         <p className="info-text" style={{ marginTop: "0.5rem" }}>
-          Tipp: Klicke 📋 um den HTML-Tag zu kopieren und füge ihn im Seiteninhalt ein.
+          {t.images.copyHint}
         </p>
       )}
     </div>

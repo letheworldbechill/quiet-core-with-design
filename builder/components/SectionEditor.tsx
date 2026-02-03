@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import type {
   Section,
   Slot,
@@ -8,26 +8,20 @@ import type {
   PageLayout,
 } from "../../design-system";
 import { validateSection } from "../../design-system";
+import type { Translations } from "../i18n";
 
 type SectionEditorProps = {
   layout: PageLayout;
   onChange: (layout: PageLayout) => void;
+  t: Translations;
 };
 
-const DECLARATION_INFO: Record<DeclarationType, { name: string; desc: string; grids: GridPattern[]; slots: SlotType[] }> = {
-  a: { name: "Focus Opening", desc: "Zentrierter Einstieg", grids: ["a"], slots: ["primary", "secondary"] },
-  b: { name: "Explanation", desc: "Erklärung/Kontext", grids: ["b", "b-mirror"], slots: ["primary", "secondary", "meta"] },
-  c: { name: "Enumeration", desc: "Aufzählung/Struktur", grids: ["b", "b-mirror"], slots: ["secondary", "list", "quote", "meta"] },
-  d: { name: "Emphasis", desc: "Betonung (nur bei ≥5 Sections)", grids: ["a"], slots: ["primary"] },
-  e: { name: "Closure", desc: "Abschluss", grids: ["a"], slots: ["secondary", "meta"] },
-};
-
-const SLOT_INFO: Record<SlotType, string> = {
-  primary: "Haupttext (groß)",
-  secondary: "Nebentext",
-  meta: "Meta-Info (klein)",
-  list: "Liste (kommagetrennt)",
-  quote: "Zitat",
+const DECLARATION_GRIDS: Record<DeclarationType, { grids: GridPattern[]; slots: SlotType[] }> = {
+  a: { grids: ["a"], slots: ["primary", "secondary"] },
+  b: { grids: ["b", "b-mirror"], slots: ["primary", "secondary", "meta"] },
+  c: { grids: ["b", "b-mirror"], slots: ["secondary", "list", "quote", "meta"] },
+  d: { grids: ["a"], slots: ["primary"] },
+  e: { grids: ["a"], slots: ["secondary", "meta"] },
 };
 
 function createDefaultSlot(type: SlotType): Slot {
@@ -42,8 +36,24 @@ function createDefaultSection(): Section {
   };
 }
 
-export function SectionEditor({ layout, onChange }: SectionEditorProps) {
+export function SectionEditor({ layout, onChange, t }: SectionEditorProps) {
   const [expandedIndex, setExpandedIndex] = useState<number | null>(0);
+
+  const SLOT_INFO = useMemo(() => ({
+    primary: t.slots.primary,
+    secondary: t.slots.secondary,
+    meta: t.slots.meta,
+    list: t.slots.list,
+    quote: t.slots.quote,
+  }), [t]);
+
+  const DECLARATION_INFO = useMemo(() => ({
+    a: { name: t.declarations.a.name, desc: t.declarations.a.desc, ...DECLARATION_GRIDS.a },
+    b: { name: t.declarations.b.name, desc: t.declarations.b.desc, ...DECLARATION_GRIDS.b },
+    c: { name: t.declarations.c.name, desc: t.declarations.c.desc, ...DECLARATION_GRIDS.c },
+    d: { name: t.declarations.d.name, desc: t.declarations.d.desc, ...DECLARATION_GRIDS.d },
+    e: { name: t.declarations.e.name, desc: t.declarations.e.desc, ...DECLARATION_GRIDS.e },
+  }), [t]);
 
   const addSection = () => {
     onChange({
@@ -70,15 +80,15 @@ export function SectionEditor({ layout, onChange }: SectionEditorProps) {
       const updated = { ...s, ...updates };
 
       // Auto-adjust grid if not allowed for declaration
-      const info = DECLARATION_INFO[updated.decl];
-      if (!info.grids.includes(updated.grid)) {
-        updated.grid = info.grids[0];
+      const grids = DECLARATION_GRIDS[updated.decl];
+      if (!grids.grids.includes(updated.grid)) {
+        updated.grid = grids.grids[0];
       }
 
       // Filter out invalid slots
-      updated.slots = updated.slots.filter((slot) => info.slots.includes(slot.type));
+      updated.slots = updated.slots.filter((slot) => grids.slots.includes(slot.type));
       if (updated.slots.length === 0) {
-        updated.slots = [createDefaultSlot(info.slots[0])];
+        updated.slots = [createDefaultSlot(grids.slots[0])];
       }
 
       return updated;
@@ -144,21 +154,21 @@ export function SectionEditor({ layout, onChange }: SectionEditorProps) {
                   <button
                     onClick={(e) => { e.stopPropagation(); moveSection(index, "up"); }}
                     disabled={index === 0}
-                    title="Nach oben"
+                    title={t.common.moveUp}
                   >
                     ↑
                   </button>
                   <button
                     onClick={(e) => { e.stopPropagation(); moveSection(index, "down"); }}
                     disabled={index === layout.sections.length - 1}
-                    title="Nach unten"
+                    title={t.common.moveDown}
                   >
                     ↓
                   </button>
                   <button
                     onClick={(e) => { e.stopPropagation(); removeSection(index); }}
                     disabled={layout.sections.length <= 1}
-                    title="Löschen"
+                    title={t.common.delete}
                   >
                     ✕
                   </button>
@@ -177,7 +187,7 @@ export function SectionEditor({ layout, onChange }: SectionEditorProps) {
 
                   <div className="section-settings">
                     <div className="form-group">
-                      <label>Typ</label>
+                      <label>{t.design.sectionType}</label>
                       <select
                         value={section.decl}
                         onChange={(e) => updateSection(index, { decl: e.target.value as DeclarationType })}
@@ -189,7 +199,7 @@ export function SectionEditor({ layout, onChange }: SectionEditorProps) {
                             disabled={d === "d" && !canUseD}
                           >
                             {d.toUpperCase()} - {DECLARATION_INFO[d].name}
-                            {d === "d" && !canUseD ? " (≥5 Sections nötig)" : ""}
+                            {d === "d" && !canUseD ? ` (≥5 ${t.common.sectionsRequired})` : ""}
                           </option>
                         ))}
                       </select>
@@ -197,14 +207,14 @@ export function SectionEditor({ layout, onChange }: SectionEditorProps) {
                     </div>
 
                     <div className="form-group">
-                      <label>Grid</label>
+                      <label>{t.design.grid}</label>
                       <select
                         value={section.grid}
                         onChange={(e) => updateSection(index, { grid: e.target.value as GridPattern })}
                       >
                         {info.grids.map((g) => (
                           <option key={g} value={g}>
-                            {g === "a" ? "Zentriert" : g === "b" ? "Zwei-Spaltig" : "Zwei-Spaltig (gespiegelt)"}
+                            {g === "a" ? t.design.gridCentered : g === "b" ? t.design.gridTwoCol : t.design.gridTwoColMirror}
                           </option>
                         ))}
                       </select>
@@ -212,7 +222,7 @@ export function SectionEditor({ layout, onChange }: SectionEditorProps) {
                   </div>
 
                   <div className="slots-section">
-                    <label>Inhalte</label>
+                    <label>{t.design.contents}</label>
                     {section.slots.map((slot, slotIndex) => (
                       <div key={slotIndex} className="slot-item">
                         <div className="slot-header">
@@ -227,14 +237,14 @@ export function SectionEditor({ layout, onChange }: SectionEditorProps) {
                         <textarea
                           value={slot.content}
                           onChange={(e) => updateSlot(index, slotIndex, e.target.value)}
-                          placeholder={slot.type === "list" ? "Element 1, Element 2, Element 3" : "Inhalt eingeben..."}
+                          placeholder={slot.type === "list" ? t.common.listPlaceholder : t.common.enterContent}
                           rows={slot.type === "list" ? 2 : 3}
                         />
                       </div>
                     ))}
 
                     <div className="add-slot">
-                      <span>Slot hinzufügen:</span>
+                      <span>{t.design.addSlot}</span>
                       {info.slots.map((slotType) => (
                         <button
                           key={slotType}
@@ -254,7 +264,7 @@ export function SectionEditor({ layout, onChange }: SectionEditorProps) {
       </div>
 
       <button className="btn btn-secondary" onClick={addSection}>
-        + Section hinzufügen
+        {t.design.addSection}
       </button>
     </div>
   );

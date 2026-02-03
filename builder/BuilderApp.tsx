@@ -13,14 +13,23 @@ import {
   type Locale,
 } from "../core";
 import { generateCSS, renderPageLayout, type PageLayout } from "../design-system";
-import { useValidation, useImages, type UploadedImage } from "./hooks";
-import { SectionEditor, ImageUploader, ValidationDisplay } from "./components";
+import { useValidation, useImages, useMarkdown, parseMarkdown, type UploadedImage } from "./hooks";
+import {
+  SectionEditor,
+  ImageUploader,
+  ValidationDisplay,
+  ResponsivePreview,
+  JsonImportExport,
+} from "./components";
+import { translations, type UILocale, type Translations } from "./i18n";
 
 type Screen = "content" | "design" | "publish";
 
 const STORAGE_KEY = "quiet-builder-site";
 const IMAGES_KEY = "quiet-builder-images";
 const LAYOUT_KEY = "quiet-builder-layout";
+const UI_LOCALE_KEY = "quiet-builder-ui-locale";
+const MARKDOWN_KEY = "quiet-builder-use-markdown";
 
 function generateId(): string {
   return crypto.randomUUID();
@@ -56,14 +65,21 @@ const defaultLayout: PageLayout = {
       decl: "a",
       grid: "a",
       slots: [
-        { type: "primary", content: "Willkommen" },
-        { type: "secondary", content: "Deine Seite beginnt hier." },
+        { type: "primary", content: "Welcome" },
+        { type: "secondary", content: "Your page starts here." },
       ],
     },
   ],
 };
 
 export function BuilderApp() {
+  // UI Language
+  const [uiLocale, setUiLocale] = useState<UILocale>(() => {
+    const stored = localStorage.getItem(UI_LOCALE_KEY);
+    return (stored === "en" || stored === "de") ? stored : "de";
+  });
+  const t: Translations = translations[uiLocale];
+
   const [screen, setScreen] = useState<Screen>("content");
   const [site, setSite] = useState<SiteContent>(() => {
     const stored = loadFromStorage<SiteContent>(STORAGE_KEY);
@@ -75,9 +91,15 @@ export function BuilderApp() {
   const [pageLayout, setPageLayout] = useState<PageLayout>(() => {
     return loadFromStorage<PageLayout>(LAYOUT_KEY) || defaultLayout;
   });
+  const [useMarkdownMode, setUseMarkdownMode] = useState(() => {
+    return loadFromStorage<boolean>(MARKDOWN_KEY) ?? false;
+  });
 
   const validation = useValidation(site);
   const imageStore = useImages(loadFromStorage<UploadedImage[]>(IMAGES_KEY) || []);
+
+  const currentPage = site.pages[currentPageIndex];
+  const processedBody = useMarkdown(currentPage?.body || "", useMarkdownMode);
 
   // Auto-save to localStorage
   useEffect(() => {
@@ -92,7 +114,13 @@ export function BuilderApp() {
     saveToStorage(LAYOUT_KEY, pageLayout);
   }, [pageLayout]);
 
-  const currentPage = site.pages[currentPageIndex];
+  useEffect(() => {
+    localStorage.setItem(UI_LOCALE_KEY, uiLocale);
+  }, [uiLocale]);
+
+  useEffect(() => {
+    saveToStorage(MARKDOWN_KEY, useMarkdownMode);
+  }, [useMarkdownMode]);
 
   const updateSite = useCallback((updates: Partial<SiteContent>) => {
     setSite((prev) => ({
@@ -120,7 +148,7 @@ export function BuilderApp() {
     const pageNum = site.pages.length + 1;
     const newPage: Page = {
       slug: `page-${pageNum}`,
-      title: `Neue Seite ${pageNum}`,
+      title: `${uiLocale === "de" ? "Neue Seite" : "New Page"} ${pageNum}`,
       body: "",
     };
     setSite((prev) => ({
@@ -129,11 +157,11 @@ export function BuilderApp() {
       pages: [...prev.pages, newPage],
     }));
     setCurrentPageIndex(site.pages.length);
-  }, [site.pages.length]);
+  }, [site.pages.length, uiLocale]);
 
   const deletePage = useCallback((index: number) => {
     if (site.pages.length <= 1) {
-      setStatus({ type: "error", message: "Mindestens eine Seite erforderlich" });
+      setStatus({ type: "error", message: t.common.minOnePage });
       return;
     }
     setSite((prev) => ({
@@ -144,17 +172,17 @@ export function BuilderApp() {
     if (currentPageIndex >= index && currentPageIndex > 0) {
       setCurrentPageIndex(currentPageIndex - 1);
     }
-  }, [site.pages.length, currentPageIndex]);
+  }, [site.pages.length, currentPageIndex, t]);
 
   const handleTransition = useCallback((targetState: ContentState) => {
     if (!canTransition(site.state, targetState)) {
-      setStatus({ type: "error", message: `Übergang zu "${targetState}" nicht erlaubt` });
+      setStatus({ type: "error", message: `Transition to "${targetState}" not allowed` });
       return;
     }
     try {
       const newState = transitionState(site.state, targetState);
       updateSite({ state: newState });
-      setStatus({ type: "success", message: `Status geändert zu: ${newState}` });
+      setStatus({ type: "success", message: `Status changed to: ${newState}` });
     } catch (e) {
       setStatus({ type: "error", message: (e as Error).message });
     }
@@ -162,15 +190,26 @@ export function BuilderApp() {
 
   const validateAndBuild = useCallback(() => {
     try {
-      validateSiteContent(site);
-      const artifacts = renderSiteContent(site);
-      setStatus({ type: "success", message: `Validierung erfolgreich! ${artifacts.length} Seite(n) generiert.` });
+      // Process markdown if enabled
+      const processedSite = useMarkdownMode
+        ? {
+            ...site,
+            pages: site.pages.map((p) => ({
+              ...p,
+              body: parseMarkdown(p.body),
+            })),
+          }
+        : site;
+
+      validateSiteContent(processedSite);
+      const artifacts = renderSiteContent(processedSite);
+      setStatus({ type: "success", message: `${t.common.success}! ${artifacts.length} page(s) generated.` });
       return artifacts;
     } catch (e) {
       setStatus({ type: "error", message: (e as Error).message });
       return null;
     }
-  }, [site]);
+  }, [site, useMarkdownMode, t]);
 
   const generatePreview = useCallback(() => {
     const artifacts = validateAndBuild();
@@ -192,10 +231,8 @@ export function BuilderApp() {
     const css = generateCSS();
     const zip = new JSZip();
 
-    // Add CSS file
     zip.file("styles.css", css);
 
-    // Add HTML files with CSS link
     artifacts.forEach((artifact) => {
       const htmlWithCssLink = artifact.content.replace(
         "</head>",
@@ -204,36 +241,33 @@ export function BuilderApp() {
       zip.file(artifact.path, htmlWithCssLink);
     });
 
-    // Add images folder
     if (imageStore.images.length > 0) {
       const imagesFolder = zip.folder("images");
       if (imagesFolder) {
         for (const image of imageStore.images) {
-          // Convert data URL to blob
           const base64Data = image.dataUrl.split(",")[1];
           imagesFolder.file(image.name, base64Data, { base64: true });
         }
       }
     }
 
-    // Generate ZIP and download
     const content = await zip.generateAsync({ type: "blob" });
     saveAs(content, `${site.seo.title || "website"}.zip`);
 
-    setStatus({ type: "success", message: `ZIP mit ${artifacts.length} Seite(n), CSS und ${imageStore.images.length} Bild(ern) heruntergeladen!` });
+    setStatus({ type: "success", message: `ZIP downloaded with ${artifacts.length} page(s) and ${imageStore.images.length} image(s)!` });
   }, [site, validateAndBuild, imageStore.images]);
 
   const resetSite = useCallback(() => {
-    if (confirm("Alle Daten löschen und neu beginnen?")) {
+    if (confirm(t.common.resetConfirm)) {
       const newSite = createEmptySiteContent(generateId(), site.locale, now());
       setSite(newSite);
       setCurrentPageIndex(0);
       setPreviewHtml(null);
       setPageLayout(defaultLayout);
       imageStore.clearAll();
-      setStatus({ type: "info", message: "Projekt zurückgesetzt" });
+      setStatus({ type: "info", message: "Project reset" });
     }
-  }, [site.locale, imageStore]);
+  }, [site.locale, imageStore, t]);
 
   const changeLocale = useCallback((locale: Locale) => {
     updateSite({ locale });
@@ -243,57 +277,89 @@ export function BuilderApp() {
     try {
       const rendered = renderPageLayout(pageLayout);
       updatePage({ body: rendered.html });
-      setStatus({ type: "success", message: "Layout auf aktuelle Seite angewendet!" });
+      setStatus({ type: "success", message: "Layout applied to current page!" });
     } catch (e) {
       setStatus({ type: "error", message: (e as Error).message });
     }
   }, [pageLayout, updatePage]);
 
+  const handleImport = useCallback((data: { site: SiteContent; layout: PageLayout; images: UploadedImage[] }) => {
+    setSite(data.site);
+    setPageLayout(data.layout);
+    imageStore.setImages(data.images);
+    setCurrentPageIndex(0);
+    setPreviewHtml(null);
+  }, [imageStore]);
+
   return (
     <div className="builder">
       <header className="header">
         <h1>🧊 Quiet Builder</h1>
-        <nav className="nav">
-          <button
-            className={`nav-btn ${screen === "content" ? "active" : ""}`}
-            onClick={() => setScreen("content")}
+        <div className="header-controls">
+          <select
+            value={uiLocale}
+            onChange={(e) => setUiLocale(e.target.value as UILocale)}
+            className="locale-select"
+            title={t.common.uiLanguage}
           >
-            Inhalt
-          </button>
-          <button
-            className={`nav-btn ${screen === "design" ? "active" : ""}`}
-            onClick={() => setScreen("design")}
-          >
-            Design
-          </button>
-          <button
-            className={`nav-btn ${screen === "publish" ? "active" : ""}`}
-            onClick={() => setScreen("publish")}
-          >
-            Veröffentlichen
-          </button>
-        </nav>
+            <option value="de">🇩🇪 DE</option>
+            <option value="en">🇬🇧 EN</option>
+          </select>
+          <nav className="nav">
+            <button
+              className={`nav-btn ${screen === "content" ? "active" : ""}`}
+              onClick={() => setScreen("content")}
+            >
+              {t.nav.content}
+            </button>
+            <button
+              className={`nav-btn ${screen === "design" ? "active" : ""}`}
+              onClick={() => setScreen("design")}
+            >
+              {t.nav.design}
+            </button>
+            <button
+              className={`nav-btn ${screen === "publish" ? "active" : ""}`}
+              onClick={() => setScreen("publish")}
+            >
+              {t.nav.publish}
+            </button>
+          </nav>
+        </div>
       </header>
 
-      <ValidationDisplay validation={validation} showWarnings={screen === "content"} />
+      <ValidationDisplay validation={validation} showWarnings={screen === "content"} t={t} />
 
       {screen === "content" && (
         <div className="screen">
-          <h2>Inhalt bearbeiten</h2>
+          <h2>{t.content.title}</h2>
 
-          <div className="form-group">
-            <label>Sprache</label>
-            <select
-              value={site.locale}
-              onChange={(e) => changeLocale(e.target.value as Locale)}
-            >
-              <option value="en">English</option>
-              <option value="pt-BR">Português (Brasil)</option>
-            </select>
+          <div className="form-row">
+            <div className="form-group">
+              <label>{t.content.language}</label>
+              <select
+                value={site.locale}
+                onChange={(e) => changeLocale(e.target.value as Locale)}
+              >
+                <option value="en">English</option>
+                <option value="pt-BR">Português (Brasil)</option>
+              </select>
+            </div>
+
+            <div className="form-group">
+              <label className="checkbox-label">
+                <input
+                  type="checkbox"
+                  checked={useMarkdownMode}
+                  onChange={(e) => setUseMarkdownMode(e.target.checked)}
+                />
+                {t.content.useMarkdown}
+              </label>
+            </div>
           </div>
 
           <div className="form-group">
-            <label>Seiten</label>
+            <label>{t.content.pages}</label>
             <ul className="page-list">
               {site.pages.map((page, index) => (
                 <li
@@ -307,7 +373,7 @@ export function BuilderApp() {
               ))}
             </ul>
             <button className="btn btn-secondary" onClick={addPage}>
-              + Seite hinzufügen
+              {t.content.addPage}
             </button>
           </div>
 
@@ -315,82 +381,93 @@ export function BuilderApp() {
             <>
               <div className="form-group">
                 <label>
-                  Slug
+                  {t.content.slug}
                   {currentPage.slug && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(currentPage.slug) && (
-                    <span className="field-error"> ⚠️ Ungültiges Format</span>
+                    <span className="field-error"> ⚠️ {t.content.slugError}</span>
                   )}
                 </label>
                 <input
                   type="text"
                   value={currentPage.slug}
                   onChange={(e) => updatePage({ slug: e.target.value.toLowerCase() })}
-                  placeholder="z.B. home, about, contact"
+                  placeholder="home, about, contact"
                 />
-                <small>Nur Kleinbuchstaben, Zahlen und Bindestriche</small>
+                <small>{t.content.slugHint}</small>
               </div>
 
               <div className="form-group">
-                <label>Titel</label>
+                <label>{t.content.pageTitle}</label>
                 <input
                   type="text"
                   value={currentPage.title}
                   onChange={(e) => updatePage({ title: e.target.value })}
-                  placeholder="Seitentitel"
+                  placeholder={t.content.pageTitle}
                 />
               </div>
 
               <div className="form-group">
-                <label>Inhalt (HTML)</label>
+                <label>{t.content.pageContent} {useMarkdownMode ? "(Markdown)" : "(HTML)"}</label>
                 <textarea
                   value={currentPage.body}
                   onChange={(e) => updatePage({ body: e.target.value })}
-                  placeholder="<p>Dein Inhalt hier...</p>"
+                  placeholder={useMarkdownMode ? "# Heading\n\nParagraph text..." : "<p>Your content...</p>"}
                 />
                 <div className="actions" style={{ marginTop: "0.5rem" }}>
                   <button className="btn btn-secondary btn-small" onClick={applyLayoutToPage}>
-                    Design-Layout anwenden
+                    {t.content.applyLayout}
                   </button>
                 </div>
+
+                {useMarkdownMode && currentPage.body && (
+                  <div className="markdown-preview">
+                    <small>{t.common.livePreview}:</small>
+                    <div
+                      className="preview-box"
+                      dangerouslySetInnerHTML={{ __html: processedBody }}
+                    />
+                  </div>
+                )}
               </div>
             </>
           )}
 
           <div className="form-group">
             <label>
-              SEO Titel
+              {t.content.seoTitle}
               <span className="char-count">{site.seo.title.length}/60</span>
             </label>
             <input
               type="text"
               value={site.seo.title}
               onChange={(e) => updateSite({ seo: { ...site.seo, title: e.target.value } })}
-              placeholder="Website-Titel für Suchmaschinen"
+              placeholder={t.content.seoTitleHint}
               className={site.seo.title.length > 60 ? "input-warning" : ""}
             />
           </div>
 
           <div className="form-group">
             <label>
-              SEO Beschreibung
+              {t.content.seoDescription}
               <span className="char-count">{site.seo.description.length}/160</span>
             </label>
             <textarea
               value={site.seo.description}
               onChange={(e) => updateSite({ seo: { ...site.seo, description: e.target.value } })}
-              placeholder="Kurze Beschreibung für Suchmaschinen"
+              placeholder={t.content.seoDescriptionHint}
               style={{ minHeight: "80px" }}
               className={site.seo.description.length > 160 ? "input-warning" : ""}
             />
           </div>
 
           <div className="form-group">
-            <label>Bilder</label>
+            <label>{t.content.images}</label>
             <ImageUploader
               images={imageStore.images}
               onAdd={imageStore.addImage}
               onRemove={imageStore.removeImage}
               error={imageStore.error}
               onClearError={imageStore.clearError}
+              t={t}
             />
           </div>
 
@@ -400,16 +477,13 @@ export function BuilderApp() {
 
       {screen === "design" && (
         <div className="screen">
-          <h2>Design System</h2>
-          <p className="info-text">
-            Erstelle Sections mit dem eingefrorenen Design System.
-            Klicke "Layout anwenden" auf der Inhalt-Seite.
-          </p>
+          <h2>{t.design.title}</h2>
+          <p className="info-text">{t.design.info}</p>
 
-          <SectionEditor layout={pageLayout} onChange={setPageLayout} />
+          <SectionEditor layout={pageLayout} onChange={setPageLayout} t={t} />
 
           <div className="download-section" style={{ marginTop: "1.5rem" }}>
-            <h3>Farbpalette (🧊 eingefroren)</h3>
+            <h3>{t.design.colorPalette} (🧊 {t.design.frozen})</h3>
             <div className="preview-box">
               <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
                 {[
@@ -446,20 +520,20 @@ export function BuilderApp() {
 
       {screen === "publish" && (
         <div className="screen">
-          <h2>Veröffentlichen</h2>
+          <h2>{t.publish.title}</h2>
 
           <div className="form-group">
-            <label>Aktueller Status</label>
+            <label>{t.publish.currentStatus}</label>
             <div>
               <span className={`state-badge ${site.state}`}>{site.state}</span>
               {!validation.isValid && (
-                <span className="state-warning"> ⚠️ Validierungsfehler vorhanden</span>
+                <span className="state-warning"> ⚠️ {t.publish.validationErrors}</span>
               )}
             </div>
           </div>
 
           <div className="form-group">
-            <label>Status ändern</label>
+            <label>{t.publish.changeStatus}</label>
             <div className="actions">
               {site.state === "draft" && (
                 <button
@@ -467,73 +541,70 @@ export function BuilderApp() {
                   onClick={() => handleTransition("review")}
                   disabled={!validation.isValid}
                 >
-                  Zur Prüfung
+                  {t.publish.toReview}
                 </button>
               )}
               {site.state === "review" && (
                 <>
                   <button className="btn btn-secondary" onClick={() => handleTransition("draft")}>
-                    Zurück zu Entwurf
+                    {t.publish.backToDraft}
                   </button>
                   <button
                     className="btn"
                     onClick={() => handleTransition("published")}
                     disabled={!validation.isValid}
                   >
-                    Veröffentlichen
+                    {t.publish.publishNow}
                   </button>
                 </>
               )}
               {site.state === "published" && (
                 <button className="btn btn-secondary" onClick={() => handleTransition("archived")}>
-                  Archivieren
+                  {t.publish.archive}
                 </button>
               )}
               {site.state === "archived" && (
-                <p className="info-text">Archivierte Inhalte können nicht mehr geändert werden.</p>
+                <p className="info-text">{t.publish.archivedInfo}</p>
               )}
             </div>
           </div>
 
           <div className="download-section">
-            <h3 style={{ marginBottom: "1rem" }}>Vorschau & Download</h3>
+            <h3 style={{ marginBottom: "1rem" }}>{t.publish.previewDownload}</h3>
             <div className="actions">
               <button className="btn btn-secondary" onClick={generatePreview}>
-                Vorschau generieren
+                {t.publish.generatePreview}
               </button>
               <button className="btn" onClick={downloadAsZip} disabled={!validation.isValid}>
-                📦 Als ZIP herunterladen
+                {t.publish.downloadZip}
               </button>
             </div>
 
             {previewHtml && (
-              <div className="preview-box" style={{ marginTop: "1rem" }}>
-                <p><strong>Live-Vorschau:</strong></p>
-                <iframe
-                  srcDoc={previewHtml}
-                  style={{
-                    width: "100%",
-                    height: "300px",
-                    border: "1px solid var(--context)",
-                    borderRadius: "4px",
-                    marginTop: "0.5rem",
-                  }}
-                  title="Preview"
-                />
+              <div style={{ marginTop: "1rem" }}>
+                <ResponsivePreview html={previewHtml} t={t} />
               </div>
             )}
           </div>
 
           <div className="download-section">
-            <h3 style={{ marginBottom: "1rem" }}>Projekt</h3>
-            <div className="actions">
+            <h3 style={{ marginBottom: "1rem" }}>{t.publish.project}</h3>
+            <JsonImportExport
+              site={site}
+              layout={pageLayout}
+              images={imageStore.images}
+              onImport={handleImport}
+              onStatus={setStatus}
+              t={t}
+            />
+            <div className="actions" style={{ marginTop: "0.5rem" }}>
               <button className="btn btn-secondary" onClick={resetSite}>
-                Projekt zurücksetzen
+                {t.publish.resetProject}
               </button>
             </div>
             <p className="info-text" style={{ marginTop: "0.5rem" }}>
-              Daten werden automatisch im Browser gespeichert.
-              {imageStore.images.length > 0 && ` (${imageStore.images.length} Bilder)`}
+              {t.publish.autoSaveInfo}
+              {imageStore.images.length > 0 && ` (${imageStore.images.length} ${t.content.images.toLowerCase()})`}
             </p>
           </div>
 
